@@ -96,6 +96,7 @@ const advancedGroups = computed(() => {
                 { label: 'Expectancy', value: advCur(a.expectancy), tip: 'Average P&L per closed trade' },
                 { label: 'Expectancy (R)', value: advNum(a.expectancyInLossUnits) + (advEmpty(a.expectancyInLossUnits) ? '' : 'R'), tip: 'Expectancy &divide; average loss. Your average loss counts as 1R (not a planned stop-loss).' },
                 { label: 'Payoff Ratio', value: advNum(a.payoffRatio), tip: 'Average win &divide; average loss' },
+                { label: 'Profit Factor', value: advNum(a.profitFactor), tip: 'Total winning P&L &divide; absolute total losing P&L' },
                 { label: 'Kelly', value: advPct(a.kelly), tip: 'Win rate - (1 - win rate) &divide; payoff ratio. Win rate ignores break-even trades. A negative value means no edge. Never size a position with the full number.' },
                 { label: 'Median Trade', value: advCur(a.medianTrade), tip: 'The middle trade. Less distorted by one big winner or loser than the average.' },
                 { label: 'Std Dev (trade)', value: advCur(a.stdDevTrade), tip: 'How much trade results vary around the average' },
@@ -108,6 +109,8 @@ const advancedGroups = computed(() => {
                 { label: 'Max Drawdown', value: advCur(a.maxDrawdown) + (advEmpty(a.maxDrawdownPctOfPeak) ? '' : ' (' + advPct(a.maxDrawdownPctOfPeak, 0) + ')'), tip: 'Biggest fall from a cumulated P&L peak, trade by trade. The percentage is relative to that peak.' },
                 { label: 'Current Drawdown', value: advCur(a.currentDrawdown), tip: 'Distance of the cumulated P&L from its highest point in this period' },
                 { label: 'Max Daily Drawdown', value: advCur(a.maxDailyDrawdown), tip: 'Same as max drawdown but using daily P&L' },
+                { label: 'Max Recovery', value: a.maxRecoveryTrades + ' trades / ' + a.maxRecoveryDays + ' days', tip: 'Longest recovery to a previous cumulative P&L high, measured in trades and distinct trading days' },
+                { label: 'Current Recovery', value: a.currentRecoveryTrades + ' trades / ' + a.currentRecoveryDays + ' days', tip: 'Current time below the latest cumulative P&L high, measured in trades and distinct trading days; zero means the equity is at a new high' },
                 { label: 'Current Streak', value: streakNow, tip: 'Consecutive wins or losses at the end of the period' },
                 { label: 'Longest Win Streak', value: a.maxWinStreak, tip: 'Most consecutive winning trades' },
                 { label: 'Longest Loss Streak', value: a.maxLossStreak, tip: 'Most consecutive losing trades' },
@@ -623,6 +626,60 @@ onBeforeMount(async () => {
 
                             <!-- TABLES -->
                             <div class="row">
+                                <div class="col-12 col-xl-6 mb-3">
+                                    <div class="dailyCard">
+                                        <h6>Performance by Weekday</h6>
+                                        <div class="table-responsive">
+                                            <table class="table">
+                                                <thead>
+                                                    <tr>
+                                                        <th scope="col">Day</th>
+                                                        <th scope="col">P&amp;L</th>
+                                                        <th scope="col">Days</th>
+                                                        <th scope="col">Trades</th>
+                                                        <th scope="col">Win rate</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <tr v-for="row in advancedStats.weekdayPerformance" :key="row.label">
+                                                        <td>{{ row.label }}</td>
+                                                        <td :class="advPnlClass(row.pnl)">{{ advCur(row.pnl) }}</td>
+                                                        <td>{{ row.tradingDays }}</td>
+                                                        <td>{{ row.tradeCount }}</td>
+                                                        <td>{{ advPct(row.winRate, 0) }}</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        <small class="text-muted">Win rate = winning closed trades / all closed trades, including breakevens. Dates use the selected timezone.</small>
+                                    </div>
+                                </div>
+                                <div v-if="advancedStats.tagPerformance.length" class="col-12 col-xl-6 mb-3">
+                                    <div class="dailyCard">
+                                        <h6>Performance by Tag</h6>
+                                        <div class="table-responsive">
+                                            <table class="table">
+                                                <thead>
+                                                    <tr>
+                                                        <th scope="col">Tag</th>
+                                                        <th scope="col">Trades</th>
+                                                        <th scope="col">Win rate</th>
+                                                        <th scope="col">P&amp;L</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <tr v-for="row in advancedStats.tagPerformance" :key="row.tagId">
+                                                        <td>{{ row.label }}</td>
+                                                        <td>{{ row.tradeCount }}</td>
+                                                        <td>{{ advPct(row.winRate, 0) }}</td>
+                                                        <td :class="advPnlClass(row.totalPnl)">{{ advCur(row.totalPnl) }}</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        <small class="text-muted">A trade with multiple tags appears in each matching row; totals can overlap and do not prove causation.</small>
+                                    </div>
+                                </div>
                                 <div class="col-12 col-xl-6 mb-3">
                                     <div class="dailyCard">
                                         <h6>Monthly</h6>

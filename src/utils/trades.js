@@ -1268,7 +1268,12 @@ export async function useCalculateAdvancedStats() {
     console.log("\nCALCULATING ADVANCED STATS")
     return new Promise((resolve) => {
         try {
-            const result = computeAdvancedStats(temp1, { amountCase: amountCase.value, timeZone: timeZoneTrade.value })
+            const result = computeAdvancedStats(temp1, {
+                amountCase: amountCase.value,
+                timeZone: timeZoneTrade.value,
+                tags,
+                tagDefinitions: availableTags,
+            })
             for (let key in advancedStats) delete advancedStats[key]
             Object.assign(advancedStats, result)
             // Sanity check against the original totals: both should be the same number

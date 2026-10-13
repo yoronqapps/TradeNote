@@ -36,9 +36,9 @@ function isClosed(t) {
 function makeZoneParts(timeZone) {
     let fmt
     try {
-        fmt = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short", hour: "numeric", hourCycle: "h23", year: "numeric", month: "2-digit" })
+        fmt = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short", hour: "numeric", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit" })
     } catch (e) {
-        fmt = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short", hour: "numeric", hourCycle: "h23", year: "numeric", month: "2-digit" })
+        fmt = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short", hour: "numeric", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit" })
     }
     return (unixSeconds) => {
         const parts = fmt.formatToParts(new Date(unixSeconds * 1000))
@@ -46,14 +46,21 @@ function makeZoneParts(timeZone) {
         return {
             weekday: WEEKDAY_INDEX[get("weekday")],
             hour: parseInt(get("hour"), 10) % 24,
+            date: get("year") + "-" + get("month") + "-" + get("day"),
             month: get("year") + "-" + get("month"),
         }
     }
 }
 
-/* Max drawdown of a series of P&L values. Equity starts at 0. */
+/*
+ * Max drawdown of a series of P&L values. Equity starts at 0.
+ * Recovery lengths count observations after the prior high until equity
+ * returns to that high or exceeds it. For daily values, one observation is
+ * one distinct trading day.
+ */
 function drawdownOf(values) {
     let equity = 0, peak = 0, maxDD = 0, maxDDPeak = 0, ddStartIdx = -1, ddEndIdx = -1, peakIdx = -1
+    let recoveryStartIdx = null, maxRecoveryLength = 0
     const equityCurve = [], ddCurve = []
     values.forEach((v, i) => {
         equity += v
@@ -62,12 +69,21 @@ function drawdownOf(values) {
         equityCurve.push(equity)
         ddCurve.push(dd)
         if (-dd > maxDD) { maxDD = -dd; maxDDPeak = peak; ddStartIdx = peakIdx; ddEndIdx = i }
+        if (dd < 0) {
+            if (recoveryStartIdx === null) recoveryStartIdx = peakIdx
+            maxRecoveryLength = Math.max(maxRecoveryLength, i - recoveryStartIdx)
+        } else if (recoveryStartIdx !== null) {
+            maxRecoveryLength = Math.max(maxRecoveryLength, i - recoveryStartIdx)
+            recoveryStartIdx = null
+        }
     })
     return {
         maxDrawdown: maxDD,
         maxDrawdownPctOfPeak: maxDDPeak > 0 ? maxDD / maxDDPeak : null,
         ddStartIdx, ddEndIdx, equityCurve, ddCurve,
         currentDrawdown: ddCurve.length ? -ddCurve[ddCurve.length - 1] : 0,
+        maxRecoveryLength,
+        currentRecoveryLength: recoveryStartIdx === null ? 0 : values.length - 1 - recoveryStartIdx,
     }
 }
 
@@ -109,6 +125,34 @@ function histogram(values, binsWanted = 12) {
     return { labels, centers, counts }
 }
 
+function buildTagPerformance(trades, tagRecords = [], tagDefinitions = []) {
+    const names = new Map()
+    tagDefinitions.forEach(group => (group.tags || []).forEach(tag => names.set(tag.id, tag.name)))
+    const byTag = new Map()
+    const records = new Map(tagRecords.map(record => [String(record.tradeId), record.tags || []]))
+
+    trades.forEach(x => {
+        const tradeTags = records.get(String(x.t.id)) || []
+        tradeTags.forEach(tagId => {
+            if (!byTag.has(tagId)) byTag.set(tagId, { tagId, tradeCount: 0, totalPnl: 0, wins: 0 })
+            const summary = byTag.get(tagId)
+            summary.tradeCount++
+            summary.totalPnl += x.pnl
+            if (x.pnl > 0) summary.wins++
+        })
+    })
+
+    return [...byTag.values()]
+        .map(summary => ({
+            tagId: summary.tagId,
+            label: names.get(summary.tagId) || summary.tagId,
+            tradeCount: summary.tradeCount,
+            totalPnl: summary.totalPnl,
+            winRate: summary.tradeCount ? summary.wins / summary.tradeCount : null,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label))
+}
+
 export function computeAdvancedStats(allTrades, opts = {}) {
     const amountCase = opts.amountCase === "gross" ? "gross" : "net"
     const timeZone = opts.timeZone || "America/New_York"
@@ -133,6 +177,12 @@ export function computeAdvancedStats(allTrades, opts = {}) {
     const decisive = winsArr.length + lossArr.length
     const avgWin = mean(winsArr)
     const avgLoss = lossArr.length ? -mean(lossArr) : null // positive magnitude
+    const totalWinningPnl = sum(winsArr)
+    const totalLosingPnl = -sum(lossArr)
+    const calculatedProfitFactor = totalLosingPnl > 0 && Number.isFinite(totalWinningPnl) && Number.isFinite(totalLosingPnl)
+        ? totalWinningPnl / totalLosingPnl
+        : null
+    const profitFactor = Number.isFinite(calculatedProfitFactor) ? calculatedProfitFactor : null
     const winRateDecisive = decisive ? winsArr.length / decisive : null
     const payoffRatio = avgWin !== null && avgLoss ? avgWin / avgLoss : null
     const expectancy = mean(pnls)
@@ -156,6 +206,32 @@ export function computeAdvancedStats(allTrades, opts = {}) {
     const sharpeDaily = dailyStd ? dailyMean / dailyStd : null
     const sortinoDaily = downsideDev ? dailyMean / downsideDev : null
     const annual = Math.sqrt(252)
+
+    /* ---- Weekday performance: local trading date, Monday through Friday ---- */
+    const weekdayRows = WEEKDAYS.slice(0, 5).map(label => ({
+        label,
+        pnl: 0,
+        tradingDays: 0,
+        tradeCount: 0,
+        wins: 0,
+        dates: new Set(),
+    }))
+    trades.forEach(x => {
+        const p = zoneParts(x.orderTime)
+        if (!Number.isInteger(p.weekday) || p.weekday < 0 || p.weekday >= weekdayRows.length) return
+        const row = weekdayRows[p.weekday]
+        row.pnl += x.pnl
+        row.tradeCount++
+        if (x.pnl > 0) row.wins++
+        row.dates.add(p.date)
+    })
+    const weekdayPerformance = weekdayRows.map(row => ({
+        label: row.label,
+        pnl: row.tradeCount ? row.pnl : null,
+        tradingDays: row.dates.size,
+        tradeCount: row.tradeCount,
+        winRate: row.tradeCount ? row.wins / row.tradeCount : null,
+    }))
 
     /* ---- Holding time ---- */
     const holdWin = [], holdLoss = []
@@ -234,6 +310,7 @@ export function computeAdvancedStats(allTrades, opts = {}) {
         avgWin,
         avgLoss,
         payoffRatio,
+        profitFactor,
         expectancy,
         expectancyInLossUnits: avgLoss ? expectancy / avgLoss : null,
         medianTrade: median(pnls),
@@ -250,6 +327,10 @@ export function computeAdvancedStats(allTrades, opts = {}) {
         maxDrawdownPctOfPeak: tradeDD.maxDrawdownPctOfPeak,
         currentDrawdown: tradeDD.currentDrawdown,
         maxDailyDrawdown: dailyDD.maxDrawdown,
+        maxRecoveryTrades: tradeDD.maxRecoveryLength,
+        currentRecoveryTrades: tradeDD.currentRecoveryLength,
+        maxRecoveryDays: dailyDD.maxRecoveryLength,
+        currentRecoveryDays: dailyDD.currentRecoveryLength,
         drawdownChart: { dates: dailyDates, equity: dailyDD.equityCurve, drawdown: dailyDD.ddCurve },
 
         /* Daily */
@@ -262,6 +343,8 @@ export function computeAdvancedStats(allTrades, opts = {}) {
         sortinoDaily,
         sharpeAnnualized: sharpeDaily !== null ? sharpeDaily * annual : null,
         sortinoAnnualized: sortinoDaily !== null ? sortinoDaily * annual : null,
+        weekdayPerformance,
+        tagPerformance: buildTagPerformance(trades, opts.tags, opts.tagDefinitions),
 
         /* Time held */
         avgHoldWinSeconds: mean(holdWin),
